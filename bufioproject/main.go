@@ -12,13 +12,13 @@ func main() {
 	f, err := os.Open("test")
 
 	if err != nil {
-		fmt.Printf("Error! (test)\n")
+		fmt.Printf("%s (test)\n", err)
 	}
 
 	wr, err := os.Create("answer.txt")
 
 	if err != nil {
-		fmt.Printf("Error! (answer.txt)\n")
+		fmt.Printf("%s (answer.txt)\n",err)
 	}
 
 	w := bufio.NewWriter(wr)
@@ -32,7 +32,7 @@ func main() {
 		_, werr := w.Write([]byte(fmt.Sprintf("%s : %s\n", time.Now(), buf[:b])))
 
 		if werr != nil {
-			fmt.Printf("Error! (write)\n")
+			fmt.Printf("%s (write)\n", err)
 		}
 
 		time.Sleep(100)
@@ -41,7 +41,7 @@ func main() {
 	}
 
 	if err == io.EOF {
-		fmt.Printf("EOF\n")
+		fmt.Printf("%s\n", err)
 	}
 
 	w.Flush()

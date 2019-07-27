@@ -17,7 +17,7 @@ func countOfChar(str string) [26]int {
 	return ans
 }
 
-func countOfCharMap(str string)  {
+func countOfCharMap(str string, j int)  {
 	ans := map[int32]int{}
 
 	for _, i := range str {
@@ -25,7 +25,7 @@ func countOfCharMap(str string)  {
 	}
 
 	for key, value := range ans {
-		fmt.Println(string(key), value)
+		fmt.Printf("goroutine %d - '%s' : %d\n", j, string(key), value)
 	}
 
 }
@@ -37,9 +37,18 @@ func main() {
 	}
 	//fmt.Println(string(dat))
 
+	// TODO with channels
+
+	L : for {
+		fmt.Println("asd")
+		if true {
+			break L
+		}
+	}
+
 	s := strings.Split(string(dat), "\n")
-	for _, i := range s {
-		go countOfCharMap(i)
+	for j, i := range s {
+		go countOfCharMap(i, j)
 	}
 	fmt.Scanln()
 	fmt.Println("done")

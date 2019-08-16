@@ -1,15 +1,17 @@
 package main
 
 import (
-	"encoding/json"
+	"cliproject/lib"
+	"errors"
 	"fmt"
-	"github.com/gorilla/mux"
 	"github.com/urfave/cli"
 	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
-	"time"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"syscall"
 )
 
 type Config struct {
@@ -27,6 +29,13 @@ type Upstream struct {
 var (
 	app = cli.NewApp()
 	name = "config.json"
+	isDaemon = false
+)
+
+var (
+	ErrNotRunning    = errors.New("Process is not running")
+	ErrUnableToParse = errors.New("Unable to read and parse process id")
+	ErrUnableToKill  = errors.New("Unable to kill process")
 )
 
 func main() {
@@ -42,6 +51,7 @@ func main() {
 func info() {
 	app.Name = "balancer"
 	app.Version = "1.0.0"
+	app.EnableBashCompletion = true
 }
 
 
@@ -51,135 +61,134 @@ func commands() {
 			Name:    "run",
 			Aliases: []string{"r"},
 			Usage:   "To run",
-			Action: func(c *cli.Context) {
-				if c.Args().First() != "" {
-					name = c.Args().Get(0)
-					file, err := ioutil.ReadFile(name)
-					if err == nil {
-						start(&file)
-						fmt.Printf("started with %s configuration\n", c.Args().Get(0))
-					} else {
-						fmt.Printf("%s configuration file not found\n", c.Args().Get(0))
-					}
-					//fmt.Printf("started with %s configuration\n", c.Args().Get(0))
-				} else {
-					fmt.Printf("started with default configuration\n")
-					file, err := ioutil.ReadFile(name)
-					if err == nil {
-						start(&file)
-						fmt.Printf("started with %s configuration\n", name)
-					} else {
-						fmt.Printf("%s configuration file not found\n", name)
-					}
-				}
-
+			Action: run,
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:        "daemon, d",
+					Usage:       "daemon flag",
+					Destination: &isDaemon,
+				},
 			},
 		},
 		{
 			Name:    "reload",
 			Aliases: []string{"re"},
 			Usage:   "Reload program",
-			Action: func(c *cli.Context) {
-				fmt.Printf("reload with %s configuration\n", name)
-				file, err := ioutil.ReadFile(name)
-				if err == nil {
-					start(&file)
-					fmt.Printf("started with %s configuration\n", c.Args().Get(0))
-				} else {
-					fmt.Printf("%s configuration file not found\n", c.Args().Get(0))
-				}
-			},
+			Action: reload,
+		},
+		{
+			Name: "stop",
+			Usage: "Stop servers",
+			Action: stop,
 		},
 	}
 }
 
-func start(file *[]byte){
-
-	data := Config{}
-	_= json.Unmarshal(*file, &data)
-
-	roundId := 0
-
-	fmt.Printf("%s\n", data)
-	rtr := mux.NewRouter()
-	srv := &http.Server{
-		Addr:fmt.Sprintf("127.0.0.1%s", data.Interface),
-		Handler: rtr,
+func start(filename string){
+	data, err := lib.GetConfig(filename)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	//n := len(data)
+	var servers []lib.MyServer
+	for _, config := range data {
+		server := lib.Init(&config)
+		servers = append(servers, server)
+		server.RunServer()
 	}
 
-	//srv.Shutdown(context.Background())
+	sign := make(chan os.Signal, 1)
+	signal.Notify(sign, os.Interrupt,os.Kill , syscall.SIGINT, syscall.SIGTERM)
+	<-sign
 
-	for _, upstream := range data.Upstreams {
-		upstr := upstream
-		rtr.HandleFunc(fmt.Sprintf("/%s", upstr.Path), func(writer http.ResponseWriter, request *http.Request) {
-			//writer.Write([]byte(fmt.Sprintf("%d\n", upstream)))
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Println("Recovered in start", r)
-				}
-			}()
-			ch := make(chan []byte)
-			if upstr.ProxyMethod == "round-robin" {
-				go serve(upstr.Backends[roundId], upstr.Method, ch)
-				select {
-				case d := <-ch:
-					writer.Write(d)
-				case <-time.After(time.Minute):
-					fmt.Println("Time out: No news in one minute")
-				}
-
-				fmt.Printf("round-robin: %d\n", roundId)
-				roundId++
-				roundId %= len(upstr.Backends)
-
-			} else {
-				for _, url := range upstr.Backends {
-					go serve(url, upstr.Method, ch)
-				}
-				select {
-				case d := <-ch:
-					fmt.Printf("")
-					writer.Write(d)
-				case <-time.After(time.Minute):
-					fmt.Println("Time out: No news in one minute")
-				}
-			}
-
-			defer close(ch)
-		})
+	for _, server := range servers {
+		server.StopServer()
 	}
-
-	srv.ListenAndServe()
-
 }
 
 
-func serve(url string, method string, ch chan []byte) error {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("Recovered in start", r)
-		}
-	}()
-	client := &http.Client{}
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return err
+func run(c *cli.Context) {
+	if isDaemon {
+		runDaemon(c)
+	}
+	if c.Args().First() != "" {
+		name = c.Args().Get(0)
+		start(name)
+	} else {
+		fmt.Printf("started with default configuration\n")
+		start(name)
+	}
+}
+
+func stop(ctx *cli.Context) error {
+	if _, err := os.Stat(getPidFilePath()); err != nil {
+		return ErrNotRunning
 	}
 
-	resp, err := client.Do(req)
+	data, err := ioutil.ReadFile(getPidFilePath())
 	if err != nil {
-		return err
+		return ErrNotRunning
+	}
+	ProcessID, err := strconv.Atoi(string(data))
+
+	if err != nil {
+		return ErrUnableToParse
 	}
 
-	f, err := ioutil.ReadAll(resp.Body)
+	process, err := os.FindProcess(ProcessID)
 	if err != nil {
-		return err
+		return ErrUnableToParse
 	}
-	err = resp.Body.Close()
+	// remove PID file
+	os.Remove(getPidFilePath())
+
+	fmt.Printf("Killing process ID [%v] now.\n", ProcessID)
+	// kill process and exit immediately
+	err = process.Kill()
+
 	if err != nil {
-		return err
+		return ErrUnableToKill
 	}
-	fmt.Println(url)
-	ch <- f
+
+	fmt.Printf("Killed process ID [%v]\n", ProcessID)
 	return nil
+}
+
+func reload() {
+	fmt.Printf("reload with %s configuration\n", name)
+	start(name)
+}
+
+func runDaemon(c *cli.Context) error {
+	cmd := exec.Command(os.Args[0], "run")
+	cmd.Start()
+	log.Println("Daemon process ID is : ", cmd.Process.Pid)
+	savePID(cmd.Process.Pid)
+	os.Exit(0)
+
+	return nil
+}
+
+func savePID(pid int){
+	file, err := os.Create(getPidFilePath())
+	if err != nil {
+		log.Printf("Unable to create pid file : %v\n", err)
+		os.Exit(1)
+	}
+
+	defer file.Close()
+
+	_, err = file.WriteString(strconv.Itoa(pid))
+
+	if err != nil {
+		log.Printf("Unable to create pid file : %v\n", err)
+		os.Exit(1)
+	}
+
+	file.Sync()
+}
+
+func getPidFilePath() string {
+	return os.Getenv("HOME") + "/daemon.pid"
 }
